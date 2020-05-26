@@ -8,7 +8,6 @@ import ch.heigvd.pro.b04.android.network.*
 import ch.heigvd.pro.b04.android.network.RockinAPI.Companion.voteForAnswerSuspending
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import retrofit2.Response
@@ -17,8 +16,9 @@ import retrofit2.Response
 class QuestionViewModel(application: Application, question : Question, private val token : String)
         : RequestsViewModel(application, question.idModerator.toInt(), question.idPoll.toInt(), token) {
 
-    private val previousQuestion : MutableStateFlow<Question?> = MutableStateFlow(null)
-    private val nextQuestion : MutableStateFlow<Question?> = MutableStateFlow(null)
+    private val nextQuestionToShow : MutableStateFlow<Question> = MutableStateFlow(question)
+    private val previousQuestionInPoll : MutableStateFlow<Question?> = MutableStateFlow(null)
+    private val nextQuestionInPoll : MutableStateFlow<Question?> = MutableStateFlow(null)
     private val nbCheckedAnswer : MutableStateFlow<Int> = MutableStateFlow(0)
     private val notifyMaxAnswer : MutableStateFlow<Int> = MutableStateFlow(0)
     private val networkErrors : Flow<NetworkError>
@@ -29,16 +29,8 @@ class QuestionViewModel(application: Application, question : Question, private v
     val answers: Flow<List<Answer>>
 
     init {
-        currentQuestion.value = question
-
-        val pollingTimeToAnswers : Flow<Pair<Long, Response<List<Answer>>>> = flow {
-            while(true) {
-                try {
-                    emit(System.currentTimeMillis() to RockinAPI.getAnswersSuspending(currentQuestion.value, token))
-                } catch (any : Exception) {}
-                delay(DELAY)
-            }
-        }.broadcastIn(viewModelScope).asFlow()
+        val pollingTimeToAnswers = currentQuestion
+            .map { System.currentTimeMillis() to RockinAPI.getAnswersSuspending(it, token) }
 
         val pollingAnswerDelayed = pollingTimeToAnswers
             .filter { it.first > lastVoteAtTime + REFRESH_DELAY }
@@ -62,6 +54,12 @@ class QuestionViewModel(application: Application, question : Question, private v
             .zip(questions) { x, y -> x to y }
 
         viewModelScope.launch {
+            questions.map {
+                it.filter { it.idQuestion == nextQuestionToShow.value.idQuestion }.get(0)
+            }.collect { currentQuestion.value = it }
+        }
+
+        viewModelScope.launch {
             answers.map {
                 it.filter { it.isChecked }.size
             }.collect { nbCheckedAnswer.value = it }
@@ -82,7 +80,7 @@ class QuestionViewModel(application: Application, question : Question, private v
 
                 return@map candidate
             }.collect {
-                previousQuestion.value = it
+                previousQuestionInPoll.value = it
             }
         }
 
@@ -101,7 +99,7 @@ class QuestionViewModel(application: Application, question : Question, private v
 
                 return@map candidate
             }.collect {
-                nextQuestion.value = it
+                nextQuestionInPoll.value = it
             }
         }
     }
@@ -134,13 +132,13 @@ class QuestionViewModel(application: Application, question : Question, private v
     }
 
     fun changeToPreviousQuestion() : Unit {
-        if (previousQuestion.value != null)
-            currentQuestion.value = previousQuestion.value!!
+        if (previousQuestionInPoll.value != null)
+            nextQuestionToShow.value = previousQuestionInPoll.value!!
     }
 
     fun changeToNextQuestion() : Unit {
-        if (nextQuestion.value != null)
-            currentQuestion.value = nextQuestion.value!!
+        if (nextQuestionInPoll.value != null)
+            nextQuestionToShow.value = nextQuestionInPoll.value!!
     }
 
     fun getNbCheckedAnswer() : StateFlow<Int> {
